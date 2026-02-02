@@ -1,5 +1,8 @@
 LIBNAME=libeloc.so
 
+SYNAPSE_DIR := /usr/local/chipltech/synapse
+SIM_DIR := /usr/local/chipltech/simulator
+
 # configure your NVCC and CXX path
 #VERSION=11.8
 #CUDA_ROOT=/opt/nvidia/hpc_sdk/Linux_x86_64/23.1/cuda/${VERSION} # HPC_SDK
@@ -18,11 +21,17 @@ DEBUG_OPTIONS=
 # DEBUG_OPTIONS=-DDEBUG_LOCAL_ENERGY # for debug
 PY_ENV=__PSI_DTYPE=PSI_DTYPE_FP32
 #INCLUDES=-I./
-INCLUDES=-I./ -I./include/
+INCLUDES = -I./ -I./include/ \
+           -I$(SYNAPSE_DIR)/include \
+           -I$(SYNAPSE_DIR)/include/dlc_kernel_test \
+           -I$(SYNAPSE_DIR)/include/external_includes \
+		   -I${SIM_DIR}/include \
+		   -I${SIM_DIR}/src \
 
 # Source and object files
 CPU_SRC=backend/cpu/calculate_local_energy_cpu.cpp
 GPU_SRC=backend/cuda/calculate_local_energy.cu
+DLC_SRC=backend/dlc/calculate_local_energy_dlc.cpp
 TEST_SRC=test/test_calculate_local_energy.cpp
 #TEST_CPU_SRC=calculate_local_energy_cpu.cpp test_calculate_local_energy.cpp
 
@@ -37,8 +46,10 @@ TEST_CPU_OBJECTS+=$(TEST_SRC:.cpp=.o)
 TARGET=eloc_test
 TEST_TARGETS_CPU=test-cpu
 TEST_TARGETS_GPU=test test-bitarr test-bithash
+DLC_LIB=/usr/local/chipltech/synapse/lib
+LDFLAGS	:= -L${DLC_LIB} -lrt -ldlc_runtime -lsynapse_core
 
-.PHONY: all cpu gpu $(TEST_TARGETS) clean
+.PHONY: all cpu gpu dlc $(TEST_TARGETS) clean
 
 all: gpu
 
@@ -59,6 +70,10 @@ cpu: $(CPU_SRC) check_pybind11
 gpu: $(GPU_SRC) check_pybind11
 	$(NVCC) ${INCLUDES} $(NVCCOPTIONS) ${DFLAGS} ${RELEASED} $(DEBUG_OPTIONS) $(INCLUDES) -Xcompiler "-fPIC -shared" ${GPU_SRC} -O3 -lineinfo -o $(LIBNAME) -L$(LIB_DIR)
 	__BACKEND=BACKEND_GPU ${PY_ENV} python interface/python/setup.py build_ext --inplace
+
+dlc: $(DLC_SRC) check_pybind11
+	$(CXX) ${INCLUDES} $(CXXOPTIONS) ${DFLAGS} -DBACKEND_DLC -fPIC -shared -O3 ${DLC_SRC} -o $(LIBNAME) ${LDFLAGS}
+	__BACKEND=BACKEND_DLC ${PY_ENV} python interface/python/setup.py build_ext --inplace
 
 # fp64: model precison and psi_type is Float64
 # hamCplx64: Hamiltonian coeff is Complex64

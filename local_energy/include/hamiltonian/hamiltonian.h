@@ -167,6 +167,45 @@ namespace Ham
         return res;
     }
 
+#ifdef BACKEND_DLC
+    void Hamiltonian::extractIndices(const QubitOpType &qubitOps, double eps) {
+        K_ = qubitOps.size();
+        NK_ = K_;
+        for (int i = 0; i <= K_; ++i) idxs_.push_back(i);
+        std::vector<std::vector<datatype>> pauliMat12Dict_;
+        std::vector<std::vector<std::vector<datatype>>> pauliMat23Dict_;
+        std::vector<std::vector<coeff_dtype>> coeffsDict_;
+
+        for (const auto &term : qubitOps) {
+            int cnt = 0;
+            std::vector<datatype> pauliMat12(nQubits_, 0);
+            std::vector<datatype> pauliMat23(nQubits_, 0);
+            // for (const auto &[pos, pauli] : term.first) {
+            auto pauli_str = term.first;
+            for (const auto &[pos, pauli] : pauli_str) {
+                if (pauli == 'X') {
+                    pauliMat12[pos] = 1;
+                } else if (pauli == 'Y') {
+                    pauliMat12[pos] = 1;
+                    pauliMat23[pos] = 1;
+                    cnt++;
+                } else {
+                    pauliMat23[pos] = 1;
+                }
+            }
+
+            #ifdef HAMILTONIAN_COEFF_COMPLEX
+            auto coeff = term.second * cplx_pow_neg_1i(cnt);
+            #else
+            auto coeff = std::real(term.second) * real_pow_neg_1i(cnt);
+            #endif
+
+            pauliMat12Buf_.insert(pauliMat12Buf_.end(), pauliMat12.begin(), pauliMat12.end());
+            pauliMat23Buf_.insert(pauliMat23Buf_.end(), pauliMat23.begin(), pauliMat23.end());
+            coeffsBuf_.push_back(coeff);
+        }
+    }
+#else
     void Hamiltonian::extractIndices(const QubitOpType &qubitOps, double eps) {
         K_ = qubitOps.size();
 
@@ -238,6 +277,7 @@ namespace Ham
         //    printf("%d\n", i);
         //}
     }
+#endif
 
     QubitOpType Hamiltonian::read_binary_qubit_op(const std::string& filename) {
         const double magic_number = 11.2552;
