@@ -3,8 +3,6 @@
 #include <typeinfo>
 #include "kernel_launcher.hpp"
 
-
-
 #define PRINT_TYPE(x) ((sizeof(x) == 4) ? "Float32" : "Float64")
 #define PRINT_TYPE2(x) ((sizeof(x) == 8) ? "Float64" : "Complex64")
 
@@ -375,21 +373,49 @@ void calculate_local_energy_kernel_bigInt(
     }
 }
 
-/**
- * Calculate local energy by fusing Hxx' and summation interface (for Julia).
- * Current rank only calculate _states[ist, ied) and ist start from 0
- * Args:
- *     batch_size: total samples number
- *     _state: samples
- *     k_idxs: ordered samples origin index used for permutation
- *     ks: map samples into id::Int Notion: n_qubits <= 64!
- *     vs: samples -> psis (ks -> vs)
- *     rank: MPI rank
- *     eps: dropout coeff < eps
- * Returns:
- *     res_eloc_batch: save the local energy result with complex value,
- *                     res_eloc_batch(1/2,:) represent real/imag
- **/
+struct LocalEnergyDeviceCache {
+    bool initialized = false;
+
+    syn::nn::Tensor hbm_idxs;
+    syn::nn::Tensor hbm_coeffs;
+    syn::nn::Tensor hbm_pauli_mat12;
+    syn::nn::Tensor hbm_pauli_mat23;
+};
+
+static LocalEnergyDeviceCache g_cache;
+
+void init_local_energy_cache() {
+    if (g_cache.initialized) return;
+
+    const uint N = g_n_qubits;
+    const uint K = g_K;
+    const uint NK = g_NK;
+    const uint num_uint32 = (N + 31) / 32;
+
+    g_cache.hbm_idxs        = syn::nn::empty({NK + 1u}, dlc_int32);
+    g_cache.hbm_coeffs      = syn::nn::empty({K, 2u}, dlc_fp32);
+    g_cache.hbm_pauli_mat12 = syn::nn::empty({K, num_uint32}, dlc_int32);
+    g_cache.hbm_pauli_mat23 = syn::nn::empty({K, num_uint32}, dlc_int32);
+    g_cache.hbm_coeffs.fill_(0);
+    // coeffs
+    for (int i = 0; i < K; i++) {
+        g_cache.hbm_coeffs.set_double({i, 0, 0, 0, 0}, g_coeffs[i]);
+    }
+
+    // pauli bit-pack（只做一次）
+    for (int i = 0; i < K; i++) {
+        uint32_t v1 = 0, v2 = 0;
+        for (int j = 0; j < N; j++) {
+            if (g_pauli_mat12[i * N + j]) v1 |= (1u << j);
+            if (g_pauli_mat23[i * N + j]) v2 |= (1u << j);
+        }
+        g_cache.hbm_pauli_mat12.set_long({i, 0, 0, 0, 0}, v1);
+        g_cache.hbm_pauli_mat23.set_long({i, 0, 0, 0, 0}, v2);
+    }
+
+    g_cache.initialized = true;
+}
+
 void calculate_local_energy(
     const int64 batch_size,
     const int64 *_states,
@@ -402,6 +428,8 @@ void calculate_local_energy(
     const float64 eps,
     psi_dtype *res_eloc_batch)
 {
+    init_local_energy_cache();
+
     const int32 n_qubits = g_n_qubits;
     const int64 *idxs = g_idxs;
     const coeff_dtype *coeffs = g_coeffs;
@@ -414,42 +442,40 @@ void calculate_local_energy(
     const uint NK = g_NK;
     const uint num_uint32 = (n_qubits + 31) / 32;
 
-    syn::nn::Tensor hbm_idxs =         syn::nn::empty({NK + 1u}, dlc_int32);
-    syn::nn::Tensor hbm_coeffs =       syn::nn::empty({K, 2u}, dlc_fp32);
-    syn::nn::Tensor hbm_pauli_mat12 =  syn::nn::empty({K, num_uint32}, dlc_int32);
-    syn::nn::Tensor hbm_pauli_mat23 =  syn::nn::empty({K, num_uint32}, dlc_int32);
+    // syn::nn::Tensor hbm_idxs =         syn::nn::empty({NK + 1u}, dlc_int32);
+    // syn::nn::Tensor hbm_coeffs =       syn::nn::empty({K, 2u}, dlc_fp32);
+    // syn::nn::Tensor hbm_pauli_mat12 =  syn::nn::empty({K, num_uint32}, dlc_int32);
+    // syn::nn::Tensor hbm_pauli_mat23 =  syn::nn::empty({K, num_uint32}, dlc_int32);
     syn::nn::Tensor hbm_ks =           syn::nn::empty({(uint)batch_size}, dlc_int32); // 默认n_qubits <=32
     syn::nn::Tensor hbm_vs =           syn::nn::empty({(uint)batch_size, 2u}, dlc_fp32);
     syn::nn::Tensor hbm_state_batch =  syn::nn::empty({(uint)batch_size, num_uint32}, dlc_int32);
     syn::nn::Tensor hbm_out =  syn::nn::empty({(uint)batch_size, 2u}, dlc_fp32);
     hbm_state_batch.fill_(0);
 
-    for (int i = 0; i < K; i++) {
-        hbm_coeffs.set_double({i, 0, 0, 0, 0}, coeffs[i]);
-        hbm_coeffs.set_double({i, 1, 0, 0, 0}, 0);
-    }
+    // for (int i = 0; i < K; i++) {
+    //     hbm_coeffs.set_double({i, 0, 0, 0, 0}, coeffs[i]);
+    //     hbm_coeffs.set_double({i, 1, 0, 0, 0}, 0);
+    // }
 
-    for (int i = 0; i < K; i++) {
-        uint32_t v1 = 0, v2 = 0;
-        for (int j = 0; j < N; j++) {
-            if (pauli_mat12[i * N + j] == 1) {
-                v1 |= (1u << j);
-            }
-            if (pauli_mat23[i * N + j] == 1) {
-                v2 |= (1u << j);
-            }
-        }
-        hbm_pauli_mat12.set_long({i, 0, 0, 0, 0}, v1);
-        hbm_pauli_mat23.set_long({i, 0, 0, 0, 0}, v2);
-    }
+    // for (int i = 0; i < K; i++) {
+    //     uint32_t v1 = 0, v2 = 0;
+    //     for (int j = 0; j < N; j++) {
+    //         if (pauli_mat12[i * N + j] == 1) {
+    //             v1 |= (1u << j);
+    //         }
+    //         if (pauli_mat23[i * N + j] == 1) {
+    //             v2 |= (1u << j);
+    //         }
+    //     }
+    //     hbm_pauli_mat12.set_long({i, 0, 0, 0, 0}, v1);
+    //     hbm_pauli_mat23.set_long({i, 0, 0, 0, 0}, v2);
+    // }
 
     for (int i = 0; i < batch_size; i++) {
         hbm_ks.set_long_flat(i, ks[i]);
         hbm_vs.set_double({i, 0, 0, 0, 0}, vs[i * 2]);
         hbm_vs.set_double({i, 1, 0, 0, 0}, vs[i * 2 + 1]);
-    }
 
-    for (int i = 0; i < batch_size; i++) {
         uint32_t state = 0;
         for (int j = 0; j < N; j++) {
             if (_states[i*N+j] == 1) {
@@ -491,10 +517,10 @@ void calculate_local_energy(
     // }
 
     k.scalar((int)n_qubits);
-    k.input(hbm_idxs);
-    k.input(hbm_coeffs);
-    k.input(hbm_pauli_mat12);
-    k.input(hbm_pauli_mat23);
+    k.input(g_cache.hbm_idxs);
+    k.input(g_cache.hbm_coeffs);
+    k.input(g_cache.hbm_pauli_mat12);
+    k.input(g_cache.hbm_pauli_mat23);
     k.input(hbm_state_batch);
     k.input(hbm_ks);
     k.input(hbm_vs);
@@ -506,7 +532,6 @@ void calculate_local_energy(
         res_eloc_batch[i*2  ] = hbm_out.get_double({i, 0, 0, 0, 0});
         res_eloc_batch[i*2+1] = hbm_out.get_double({i, 1, 0, 0, 0});
     }
-
     // std::cout << "out:\n";
     // for (int i = 0; i < batch_size; i++) {
     //     std::cout << hbm_out.get_double({i, 0, 0, 0, 0}) << " + " << hbm_out.get_double({i, 1, 0, 0, 0}) << "i\n";
