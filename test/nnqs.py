@@ -145,44 +145,42 @@ def train_loop(ham_path, cfg_file, log_file=None):
         print(f"load model parameters from {config.checkpoint_path}")
     count_parameters(wtrain, print_verbose=True)
 
-    with torch.autograd.detect_anomaly() if config.detect_anomaly else nullcontext():
-        for i in range(1, n_epoches+1):
-            Timer.start("total") # accumulation time from start
-            Timer.start("elapsed") # one iteration time
-            Timer.start("sampling") # sampling time
-            n_samples, states, psis = wtrain.gen_samples(n_samples)
-            Timer.stop("sampling")
+    for i in range(1, 10+1):
+        Timer.start("total") # accumulation time from start
+        Timer.start("elapsed") # one iteration time
+        Timer.start("sampling") # sampling time
+        n_samples, states, psis = wtrain.gen_samples(n_samples)
+        Timer.stop("sampling")
 
-            Timer.start("eloc") # calculate local energy time
-            states = states.reshape(n_samples.shape[0], n_qubits)
-            if config.hamiltonian_type in ["exact", "exactOpt"]:
-                local_energies = ham.calculate_local_energy(wtrain.wavefunction, states, is_permutation=True, eloc_split_bs=config.eloc_split_bs)
-            elif config.hamiltonian_type == "CPP":
-                # check if states and psis have nan
-                local_energies = ham.calculate_local_energy(states, psis)
-            Timer.stop("eloc")
+        Timer.start("eloc") # calculate local energy time
+        states = states.reshape(n_samples.shape[0], n_qubits)
+        if config.hamiltonian_type in ["exact", "exactOpt"]:
+            local_energies = ham.calculate_local_energy(wtrain.wavefunction, states, is_permutation=True, eloc_split_bs=config.eloc_split_bs)
+        elif config.hamiltonian_type == "CPP":
+            # check if states and psis have nan
+            local_energies = ham.calculate_local_energy(states, psis)
+        Timer.stop("eloc")
+        Timer.start("gradient") # gradient calculation time
+        weights = n_samples / n_samples.sum()
+        eloc_expectation = np.dot(weights, local_energies)
+        eloc_corr = local_energies - eloc_expectation
+        wtrain.update_grad(eloc_corr, weights)
+        Timer.stop("gradient")
+        Timer.stop("total")
+        Timer.stop("elapsed")
 
-            Timer.start("gradient") # gradient calculation time
-            weights = n_samples / n_samples.sum()
-            eloc_expectation = np.dot(weights, local_energies)
-            eloc_corr = local_energies - eloc_expectation
-            wtrain.update_grad(eloc_corr, weights)
-            Timer.stop("gradient")
-            Timer.stop("total")
-            Timer.stop("elapsed")
+        if config.save_model == 1 and i % config.save_per_epoches == 0:
+            wtrain.save_model(f"checkpoints/{config.log_file}-iter{i}.pt")
 
-            if config.save_model == 1 and i % config.save_per_epoches == 0:
-                wtrain.save_model(f"checkpoints/{config.log_file}-iter{i}.pt")
+        # Timer.summary()
+        if i % config.log_step == 0:
+            weights_str = ' '.join('{:.6f}'.format(w) for w in weights[:8])
+            print(f"\n{i}-th eloc_mean: {eloc_expectation.real} Hartree")
+            print(f"batch_size: {wtrain.n_samples} n_uniq_samples: {states.shape[0]} \t weights[:8]: [{weights_str}]")
+            Timer.display("elapsed", "sampling", "eloc", "gradient", "total", precision=4)
+        Timer.reset("elapsed", "sampling", "eloc", "gradient")
 
-            # Timer.summary()
-            if i % config.log_step == 0:
-                weights_str = ' '.join('{:.6f}'.format(w) for w in weights[:8])
-                print(f"\n{i}-th eloc_mean: {eloc_expectation.real} Hartree")
-                print(f"batch_size: {wtrain.n_samples} n_uniq_samples: {states.shape[0]} \t weights[:8]: [{weights_str}]")
-                Timer.display("elapsed", "sampling", "eloc", "gradient", "total", precision=4)
-            Timer.reset("elapsed", "sampling", "eloc", "gradient")
-
-            Timer.reset("sampling", "eloc", "gradient")
+        Timer.reset("sampling", "eloc", "gradient")
 
     ham.free_hamiltonian()
 

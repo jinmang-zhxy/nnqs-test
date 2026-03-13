@@ -60,7 +60,7 @@ cd NeuralNetworkQuantumState/test
 # eg. `./submit.sh ../molecules/lih/qubit_op.data configs/config-lih.yaml lih-test`
 # This will output into file `out.lih-test`
 # Your can modify the submit.sh acoording your compute platform
-./submit.sh <hamiltonian_path> <config_file_name> <out_file_name_suffix>
+bash submit.sh ../molecules/thomas/ch4/qubit_op.data configs/config-ch4.yaml CH4-test
 ```
 
 ### Parallel Version (Torchrun)

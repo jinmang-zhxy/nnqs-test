@@ -394,23 +394,33 @@ void init_local_energy_cache() {
 
     g_cache.hbm_idxs        = syn::nn::empty({NK + 1u}, dlc_int32);
     g_cache.hbm_coeffs      = syn::nn::empty({K, 2u}, dlc_fp32);
-    g_cache.hbm_pauli_mat12 = syn::nn::empty({K, num_uint32}, dlc_int32);
+    g_cache.hbm_pauli_mat12 = syn::nn::empty({NK, num_uint32}, dlc_int32);
     g_cache.hbm_pauli_mat23 = syn::nn::empty({K, num_uint32}, dlc_int32);
     g_cache.hbm_coeffs.fill_(0);
+
+    for (int i = 0; i < NK + 1; i++) {
+        g_cache.hbm_idxs.set_long_flat(i, g_idxs[i]);
+    }
     // coeffs
     for (int i = 0; i < K; i++) {
         g_cache.hbm_coeffs.set_double({i, 0, 0, 0, 0}, g_coeffs[i]);
     }
 
     // pauli bit-pack（只做一次）
-    for (int i = 0; i < K; i++) {
-        uint32_t v1 = 0, v2 = 0;
+    for (int i = 0; i < NK; i++) {
+        uint32_t v = 0;
         for (int j = 0; j < N; j++) {
-            if (g_pauli_mat12[i * N + j]) v1 |= (1u << j);
-            if (g_pauli_mat23[i * N + j]) v2 |= (1u << j);
+            if (g_pauli_mat12[i * N + j]) v |= (1u << j);
         }
-        g_cache.hbm_pauli_mat12.set_long({i, 0, 0, 0, 0}, v1);
-        g_cache.hbm_pauli_mat23.set_long({i, 0, 0, 0, 0}, v2);
+        g_cache.hbm_pauli_mat12.set_long({i, 0, 0, 0, 0}, v);
+    }
+
+    for (int i = 0; i < K; i++) {
+        uint32_t v = 0;
+        for (int j = 0; j < N; j++) {
+            if (g_pauli_mat23[i * N + j]) v |= (1u << j);
+        }
+        g_cache.hbm_pauli_mat23.set_long({i, 0, 0, 0, 0}, v);
     }
 
     g_cache.initialized = true;
@@ -442,34 +452,12 @@ void calculate_local_energy(
     const uint NK = g_NK;
     const uint num_uint32 = (n_qubits + 31) / 32;
 
-    // syn::nn::Tensor hbm_idxs =         syn::nn::empty({NK + 1u}, dlc_int32);
-    // syn::nn::Tensor hbm_coeffs =       syn::nn::empty({K, 2u}, dlc_fp32);
-    // syn::nn::Tensor hbm_pauli_mat12 =  syn::nn::empty({K, num_uint32}, dlc_int32);
-    // syn::nn::Tensor hbm_pauli_mat23 =  syn::nn::empty({K, num_uint32}, dlc_int32);
     syn::nn::Tensor hbm_ks =           syn::nn::empty({(uint)batch_size}, dlc_int32); // 默认n_qubits <=32
     syn::nn::Tensor hbm_vs =           syn::nn::empty({(uint)batch_size, 2u}, dlc_fp32);
     syn::nn::Tensor hbm_state_batch =  syn::nn::empty({(uint)batch_size, num_uint32}, dlc_int32);
     syn::nn::Tensor hbm_out =  syn::nn::empty({(uint)batch_size, 2u}, dlc_fp32);
     hbm_state_batch.fill_(0);
 
-    // for (int i = 0; i < K; i++) {
-    //     hbm_coeffs.set_double({i, 0, 0, 0, 0}, coeffs[i]);
-    //     hbm_coeffs.set_double({i, 1, 0, 0, 0}, 0);
-    // }
-
-    // for (int i = 0; i < K; i++) {
-    //     uint32_t v1 = 0, v2 = 0;
-    //     for (int j = 0; j < N; j++) {
-    //         if (pauli_mat12[i * N + j] == 1) {
-    //             v1 |= (1u << j);
-    //         }
-    //         if (pauli_mat23[i * N + j] == 1) {
-    //             v2 |= (1u << j);
-    //         }
-    //     }
-    //     hbm_pauli_mat12.set_long({i, 0, 0, 0, 0}, v1);
-    //     hbm_pauli_mat23.set_long({i, 0, 0, 0, 0}, v2);
-    // }
 
     for (int i = 0; i < batch_size; i++) {
         hbm_ks.set_long_flat(i, ks[i]);
@@ -485,36 +473,6 @@ void calculate_local_energy(
         hbm_state_batch.set_long({i, 0, 0, 0, 0}, state);
     }
     auto k = syn::dlc::KernelDesc();
-
-    // std::cout << "coeffs:\n";
-    // for (int i = 0; i < K; i++) {
-    //     std::cout << hbm_coeffs.get_double({i, 0, 0, 0, 0}) << " + " << hbm_coeffs.get_double({i, 1, 0, 0, 0}) << "i\n";
-    // }
-
-    // std::cout << "pauli12:\n";
-    // for (int i = 0; i < K; i++) {
-    //     std::cout << hbm_pauli_mat12.get_long({i, 0, 0, 0, 0}) << "\n";
-    // }
-
-    // std::cout << "pauli23:\n";
-    // for (int i = 0; i < K; i++) {
-    //     std::cout << hbm_pauli_mat23.get_long({i, 0, 0, 0, 0}) << "\n";
-    // }
-
-    // std::cout << "state_batch:\n";
-    // for (int i = 0; i < batch_size; i++) {
-    //     std::cout << hbm_state_batch.get_long({i, 0, 0, 0, 0}) << "\n";
-    // }
-
-    // std::cout << "ks:\n";
-    // for (int i = 0; i < batch_size; i++) {
-    //     std::cout << hbm_ks.get_long_flat(i) << "\n";
-    // }
-
-    // std::cout << "vs:\n";
-    // for (int i = 0; i < batch_size; i++) {
-    //     std::cout << hbm_vs.get_double({i, 0, 0, 0, 0}) << " + " << hbm_vs.get_double({i, 1, 0, 0, 0}) << "i\n";
-    // }
 
     k.scalar((int)n_qubits);
     k.input(g_cache.hbm_idxs);
@@ -532,10 +490,6 @@ void calculate_local_energy(
         res_eloc_batch[i*2  ] = hbm_out.get_double({i, 0, 0, 0, 0});
         res_eloc_batch[i*2+1] = hbm_out.get_double({i, 1, 0, 0, 0});
     }
-    // std::cout << "out:\n";
-    // for (int i = 0; i < batch_size; i++) {
-    //     std::cout << hbm_out.get_double({i, 0, 0, 0, 0}) << " + " << hbm_out.get_double({i, 1, 0, 0, 0}) << "i\n";
-    // }
 }
 
 // just for function validation
